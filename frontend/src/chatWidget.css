@@ -53,8 +53,8 @@
   position: fixed;
   bottom: 90px;
   right: 24px;
-  width: 360px;
-  max-height: 70vh;
+  width: 480px;
+  max-height: 80vh;
   background: #ffffff;
   border-radius: 16px;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.25);
@@ -163,7 +163,26 @@
   border: 1px solid #ccc;
   padding: 6px 8px;
   font-size: 14px;
-  max-height: 70px;
+  height: auto;
+  overflow: hidden;
+  max-height: 160px;
+}
+
+.language-btn {
+  background: #2196f3;
+  border: none;
+  color: white;
+  border-radius: 10px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: background 0.2s ease;
+  min-width: 36px;
+}
+
+.language-btn:hover {
+  background: #1976d2;
 }
 
 .send-btn {
@@ -179,6 +198,35 @@
 .send-btn:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+.voice-btn {
+  background: #ff9800;
+  border: none;
+  color: white;
+  border-radius: 10px;
+  padding: 0 12px;
+  font-size: 18px;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.1s ease;
+}
+
+.voice-btn:hover {
+  background: #f57c00;
+}
+
+.voice-btn.listening {
+  background: #f44336;
+  animation: pulse 0.6s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(244, 67, 54, 0.7);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(244, 67, 54, 0);
+  }
 }
 
 /* Mobile tweaks */
