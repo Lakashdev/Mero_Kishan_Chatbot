@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 
-const API_URL = "http://127.0.0.1:5000/chat";        // Flask chat backend
+const API_URL = "http://127.0.0.1:5000/chat"; // Flask chat backend
 const TRANSCRIBE_URL = "http://127.0.0.1:5000/transcribe"; // Flask STT backend
 
 export default function ChatWidget() {
@@ -17,6 +17,8 @@ export default function ChatWidget() {
 
   const [voices, setVoices] = useState([]);
   const [isListening, setIsListening] = useState(false); // now = recording state
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const [language, setLanguage] = useState("ne-NP"); // UI mode: Nepali or English
 
   // NEW: MediaRecorder instead of SpeechRecognition
@@ -51,32 +53,34 @@ export default function ChatWidget() {
   const speakText = (text) => {
     if (!window.speechSynthesis || !voices.length) return;
 
+    // If already speaking → stop and exit immediately
+    if (window.speechSynthesis.speaking) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+      return;
+    }
+
     const msg = new SpeechSynthesisUtterance(text);
     const nepali = isNepaliText(text);
 
     let selectedVoice = null;
 
     if (nepali) {
-      // try Nepali, else Hindi
-      selectedVoice = voices.find((v) =>
-        v.lang.toLowerCase().includes("ne")
-      );
+      selectedVoice = voices.find((v) => v.lang.toLowerCase().includes("ne"));
       if (!selectedVoice) {
-        selectedVoice = voices.find((v) =>
-          v.lang.toLowerCase().includes("hi")
-        );
+        selectedVoice = voices.find((v) => v.lang.toLowerCase().includes("hi"));
       }
       msg.lang = "ne-NP";
     } else {
-      selectedVoice = voices.find((v) =>
-        v.lang.toLowerCase().includes("en")
-      );
+      selectedVoice = voices.find((v) => v.lang.toLowerCase().includes("en"));
       msg.lang = "en-US";
     }
 
     if (selectedVoice) msg.voice = selectedVoice;
 
-    window.speechSynthesis.cancel();
+    msg.onstart = () => setIsSpeaking(true);
+    msg.onend = () => setIsSpeaking(false);
+
     window.speechSynthesis.speak(msg);
   };
 
@@ -144,7 +148,8 @@ export default function ChatWidget() {
     // resize immediately while typing
     if (textareaRef.current) {
       textareaRef.current.style.height = "auto";
-      textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, MAX_INPUT_HEIGHT) + "px";
+      textareaRef.current.style.height =
+        Math.min(textareaRef.current.scrollHeight, MAX_INPUT_HEIGHT) + "px";
     }
   };
 
@@ -156,6 +161,7 @@ export default function ChatWidget() {
   // 5️⃣ Voice Input: record audio and send to /transcribe
   const startRecording = async () => {
     try {
+      setIsTranscribing(false);
       // If there's any existing text, clear it when starting a new recording
       if (input && input.trim()) {
         setInput("");
@@ -200,7 +206,7 @@ export default function ChatWidget() {
         } catch (err) {
           console.error("Transcription error", err);
         }
-
+        setIsTranscribing(false);
         // stop mic tracks
         stream.getTracks().forEach((t) => t.stop());
       };
@@ -215,6 +221,7 @@ export default function ChatWidget() {
 
   const stopRecording = () => {
     if (mediaRecorderRef.current) {
+      setIsTranscribing(true);
       mediaRecorderRef.current.stop();
       setIsListening(false);
     }
@@ -246,7 +253,7 @@ export default function ChatWidget() {
               title="Read aloud"
               onClick={repeatLastBotMessage}
             >
-              🔊
+              {isSpeaking ? "🔇" : "🔊"}
             </button>
             <button className="icon-btn" onClick={toggleWidget}>
               ✕
@@ -266,6 +273,12 @@ export default function ChatWidget() {
               <div className="bubble typing">Thinking…</div>
             </div>
           )}
+          {isTranscribing && (
+            <div className="chat-message bot">
+              <div className="bubble typing">Processing voice…</div>
+            </div>
+          )}
+
           <div ref={messagesEndRef} />
         </div>
 
@@ -274,9 +287,7 @@ export default function ChatWidget() {
           <button
             className="language-btn"
             onClick={toggleLanguage}
-            title={`Switch to ${
-              language === "ne-NP" ? "English" : "Nepali"
-            }`}
+            title={`Switch to ${language === "ne-NP" ? "English" : "Nepali"}`}
           >
             {language === "ne-NP" ? "नेपाली" : "EN"}
           </button>
@@ -286,7 +297,7 @@ export default function ChatWidget() {
             className="chat-input"
             placeholder={
               language === "ne-NP"
-                ? "Nepal मा प्रश्न सोध्नुस..."
+                ? "Nepali मा प्रश्न सोध्नुस..."
                 : "Ask about crops, soil, fertilizer, pests…"
             }
             value={input}
