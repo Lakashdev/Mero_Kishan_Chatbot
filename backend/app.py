@@ -2,159 +2,181 @@ import os
 import re
 import tempfile
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from transformers import pipeline
-import torch
-
 # ---------------- ENV SETUP ----------------
 load_dotenv()
 
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-
-if not GITHUB_TOKEN:
-    raise Exception("❌ ERROR: GITHUB_TOKEN is missing. Add it to your .env file.")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise Exception("ERROR: OPENAI_API_KEY is missing.")
 
 # ---------------- FLASK INIT ----------------
 app = Flask(__name__)
 CORS(app)
 
 # ---------------- OPENAI CLIENT ----------------
-client = OpenAI(
-    base_url="https://models.github.ai/inference",
-    api_key=GITHUB_TOKEN,
-)
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-MODEL = "openai/gpt-4o-mini"
+CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+STT_MODEL  = os.getenv("OPENAI_STT_MODEL", "whisper-1")
+TTS_MODEL  = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
+TTS_VOICE = os.getenv("OPENAI_TTS_VOICE", "alloy")
 
-# ---------------- ASR PIPELINE (LOCAL NEPALI MODEL) ----------------
-# Path to your locally downloaded HF model folder
-ASR_MODEL_PATH = os.path.join(
-    os.path.dirname(__file__),
-    "nepali_asr_model",  # 👈 folder next to app.py
-)
-
-if not os.path.isdir(ASR_MODEL_PATH):
-    raise Exception(f"❌ ASR model folder not found at: {ASR_MODEL_PATH}")
-
-# device: 0 = first GPU, -1 = CPU
-asr_device = 0 if torch.cuda.is_available() else -1
-print(f"🚀 Loading Nepali ASR model on: {'cuda' if asr_device == 0 else 'cpu'}")
-print(f"📁 Using ASR model from: {ASR_MODEL_PATH}")
-
-asr_pipe = pipeline(
-    task="automatic-speech-recognition",
-    model=ASR_MODEL_PATH,
-    device=asr_device,
-    chunk_length_s=30,  # reasonable for short questions
-)
-
+# ---------------- TOON PARSER ----------------
+def parse_toon(text: str) -> dict:
+    """
+    Very small TOON parser.
+    Format:
+      Q=message text;L=ne
+    """
+    data = {}
+    parts = text.split(";")
+    for p in parts:
+        if "=" in p:
+            k, v = p.split("=", 1)
+            data[k.strip()] = v.strip()
+    return data
 
 # ---------------- UTIL: CLEAN TEXT ----------------
 def clean_text(text: str) -> str:
     if not text:
         return ""
-    text = re.sub(r"[*•\-\_]+", "", text)       # remove bullets, markdown
-    text = re.sub(r"^\s*\d+\.\s*", "", text)    # numbered lists at start of lines
-    text = re.sub(r"\s{2,}", " ", text)         # double+ spaces
-    text = re.sub(r"\n{2,}", "\n", text)        # extra newlines
+    text = re.sub(r"[*•\-\_]+", "", text)
+    text = re.sub(r"^\s*\d+\.\s*", "", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"\n{2,}", "\n", text)
     return text.strip()
 
-
-# ---------------- CHAT ENDPOINT ----------------
+# ---------------- CHAT (TOON INPUT) ----------------
 @app.route("/chat", methods=["POST"])
 def chat():
-    data = request.get_json(silent=True) or {}
-    user_message = data.get("message")
+    raw = request.data.decode("utf-8").strip()
+    if not raw:
+        return jsonify({"error": "Empty request"}), 400
+
+    toon = parse_toon(raw)
+
+    user_message = toon.get("Q") or raw
 
     if not user_message:
-        return jsonify({"error": "Message is required"}), 400
+        return jsonify({"error": "Message missing"}), 400
 
     try:
         response = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a Nepali agriculture expert. "
-                        "Give clear, simple answers. "
-                        "Use plain text only. "
-                        "Do NOT use bullets, *, -, markdown or formatting. "
-                        "Explain in a helpful way suitable for farmers."
-                        "Give answers in Nepali language like you are talking to a farmer and as Native Nepali Speaker."
-                        "Annswer in Nepali language only."
-
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": user_message,
-                },
-            ],
+            model=CHAT_MODEL,
+messages = [
+    {
+        "role": "system",
+        "content": (
+            "You are a Nepali agriculture expert from Nepal. "
+            "Always respond in pure Nepali language as spoken in Nepal. "
+            "Do NOT use Hindi words, Hinglish, or Indian-style Nepali. "
+            "Use natural Nepali vocabulary commonly used by farmers in Nepal. "
+            "Keep the tone simple, respectful, and practical. "
+            "Write in plain text only. "
+            "Do NOT use bullets, symbols, markdown, or formatting. "
+            "Explain things clearly like you are talking to a farmer in a village."
+        ),
+    },
+    {"role": "user", "content": user_message},
+],
             max_tokens=600,
             temperature=0.6,
         )
 
-        raw_reply = response.choices[0].message.content
-        clean_reply = clean_text(raw_reply)
-
-        return jsonify({"reply": clean_reply})
+        reply = clean_text(response.choices[0].message.content or "")
+        return jsonify({"reply": reply})
 
     except Exception as e:
-        print("ERROR in /chat:", e)
+        print("CHAT error:", e)
         return jsonify({
-            "reply": "माफ गर्नुहोस्, अहिले प्राविधिक समस्याका कारण उत्तर दिन सकिन। कृपया फेरि प्रयास गर्नुहोस्।"
-        })
+            "reply": "माफ गर्नुहोस्, अहिले प्राविधिक समस्याका कारण उत्तर दिन सकिन।"
+        }), 500
 
-
-# ---------------- TRANSCRIBE ENDPOINT ----------------
+# ---------------- SPEECH TO TEXT ----------------
 @app.route("/transcribe", methods=["POST"])
 def transcribe():
-    """
-    Expects:
-      - file: audio blob (webm) from browser MediaRecorder
-
-    Returns:
-      { "text": "..." }  # Nepali text from ASR model
-    """
     if "file" not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
+        return jsonify({"error": "No file"}), 400
 
     audio_file = request.files["file"]
 
     try:
-        # Save incoming audio to a temp file
-        with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
-            tmp_path = tmp.name
-            audio_file.save(tmp_path)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp:
+            path = tmp.name
+            audio_file.save(path)
 
-        print("🎙 Transcribing (Nepali ASR) file:", tmp_path)
+        with open(path, "rb") as f:
+            transcript = client.audio.transcriptions.create(
+                file=f,
+                model=STT_MODEL,
+                language="ne",
+            )
 
-        # Call the Nepali ASR pipeline
-        result = asr_pipe(tmp_path)  # {"text": "...", "chunks": [...]}
-        text = (result.get("text") or "").strip()
-
-        print("📝 Transcription result:", text)
-
+        text = (transcript.text or "").strip()
         if not text:
             return jsonify({"error": "Empty transcription"}), 500
 
         return jsonify({"text": text})
 
     except Exception as e:
-        print("Transcription error:", e)
+        print("STT error:", e)
         return jsonify({"error": "Transcription failed"}), 500
+
+# ---------------- TEXT TO SPEECH (TOON INPUT) ----------------
+@app.route("/speak", methods=["POST", "OPTIONS"])
+def speak():
+    if request.method == "OPTIONS":
+        return "", 200
+
+    raw = request.data.decode("utf-8").strip()
+    if not raw:
+        return jsonify({"error": "Empty request"}), 400
+
+    toon = parse_toon(raw)
+    text = toon.get("Q") or raw
+
+    if not text:
+        return jsonify({"error": "Text missing"}), 400
+
+    try:
+        # Always enforce the same voice personality
+        voice_profile = (
+            "Speak in a calm, friendly native Nepali female voice. "
+            "Use a neutral Nepali accent. "
+            "Do not change accent, speed, or tone. "
+            "Do not add emotions, or sound effects. "
+            "Speak clearly like a helpful agriculture advisor."
+        )
+
+        # Combine profile + content
+        tts_input = f"{voice_profile}\n\n{text}"
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+            audio_path = tmp.name
+
+        with client.audio.speech.with_streaming_response.create(
+            model=TTS_MODEL,
+            voice=TTS_VOICE,
+            input=tts_input,
+        ) as response:
+            response.stream_to_file(audio_path)
+
+        return send_file(audio_path, mimetype="audio/mpeg")
+
+    except Exception as e:
+        print("TTS error:", e)
+        return jsonify({"error": "Text to speech failed"}), 500
 
 
 # ---------------- HOME ----------------
 @app.route("/", methods=["GET"])
 def home():
-    return "🌾 Mero Kisan API (GitHub Models + Local Nepali ASR) is running!"
-
+    return "Mero Kisan API (TOON + OpenAI STT/TTS + GPT-4o Mini) is running"
 
 if __name__ == "__main__":
     app.run(debug=False)
